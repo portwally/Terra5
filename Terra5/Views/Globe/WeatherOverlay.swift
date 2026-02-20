@@ -36,54 +36,28 @@ enum WeatherLayerType: String, CaseIterable, Identifiable {
 
 // MARK: - RainViewer Radar Overlay (Rain - Free, no API key!)
 class RainRadarOverlay: MKTileOverlay {
-    private var timestamp: Int
-    private var colorScheme: Int
-
     // Color schemes: 0=original, 1=universal blue, 2=TITAN, 3=TWC, 4=Meteored, 5=NEXRAD, 6=Rainbow, 7=Dark Sky
-    init(timestamp: Int? = nil, colorScheme: Int = 6) {
-        self.timestamp = timestamp ?? Int(Date().timeIntervalSince1970)
-        self.colorScheme = colorScheme
-        super.init(urlTemplate: nil)
+    init(timestamp: Int, colorScheme: Int = 6) {
+        // Use urlTemplate with placeholders - MKTileOverlay replaces {x}, {y}, {z}
+        let template = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/{z}/{x}/{y}/\(colorScheme)/1_1.png"
+        NSLog("[TERRA5] RainRadarOverlay template: %@", template)
+        super.init(urlTemplate: template)
         self.canReplaceMapContent = false
         self.minimumZ = 1
         self.maximumZ = 12
-    }
-
-    func updateTimestamp(_ newTimestamp: Int) {
-        self.timestamp = newTimestamp
-    }
-
-    override func url(forTilePath path: MKTileOverlayPath) -> URL {
-        // RainViewer tile URL format (no API key required!)
-        // https://tilecache.rainviewer.com/v2/radar/{timestamp}/{size}/{z}/{x}/{y}/{color}/{options}.png
-        // options: 1_1 = smooth + snow
-        let urlString = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/\(path.z)/\(path.x)/\(path.y)/\(colorScheme)/1_1.png"
-        NSLog("[TERRA5] Rain tile URL: %@", urlString)
-        return URL(string: urlString)!
     }
 }
 
 // MARK: - Cloud Cover Overlay (Infrared Satellite)
 class CloudCoverOverlay: MKTileOverlay {
-    private var timestamp: Int
-
-    init(timestamp: Int? = nil) {
-        self.timestamp = timestamp ?? Int(Date().timeIntervalSince1970)
-        super.init(urlTemplate: nil)
+    init(timestamp: Int) {
+        // Use urlTemplate with placeholders
+        let template = "https://tilecache.rainviewer.com/v2/satellite/\(timestamp)/256/{z}/{x}/{y}/0/0_0.png"
+        NSLog("[TERRA5] CloudCoverOverlay template: %@", template)
+        super.init(urlTemplate: template)
         self.canReplaceMapContent = false
         self.minimumZ = 1
         self.maximumZ = 8
-    }
-
-    func updateTimestamp(_ newTimestamp: Int) {
-        self.timestamp = newTimestamp
-    }
-
-    override func url(forTilePath path: MKTileOverlayPath) -> URL {
-        // RainViewer satellite IR tiles (shows cloud cover)
-        let urlString = "https://tilecache.rainviewer.com/v2/satellite/\(timestamp)/256/\(path.z)/\(path.x)/\(path.y)/0/0_0.png"
-        NSLog("[TERRA5] Cloud tile URL: %@", urlString)
-        return URL(string: urlString)!
     }
 }
 
@@ -91,24 +65,14 @@ class CloudCoverOverlay: MKTileOverlay {
 class TemperatureOverlay: MKTileOverlay {
     // Using RainViewer radar tiles with TITAN color scheme (red/orange/yellow)
     // This approximates a thermal view of precipitation
-    private var timestamp: Int
-
-    init(timestamp: Int? = nil) {
-        self.timestamp = timestamp ?? Int(Date().timeIntervalSince1970)
-        super.init(urlTemplate: nil)
+    init(timestamp: Int) {
+        // Use urlTemplate with placeholders - TITAN color scheme (2) for thermal look
+        let template = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/{z}/{x}/{y}/2/1_1.png"
+        NSLog("[TERRA5] TemperatureOverlay template: %@", template)
+        super.init(urlTemplate: template)
         self.canReplaceMapContent = false
         self.minimumZ = 1
         self.maximumZ = 12
-    }
-
-    func updateTimestamp(_ newTimestamp: Int) {
-        self.timestamp = newTimestamp
-    }
-
-    override func url(forTilePath path: MKTileOverlayPath) -> URL {
-        // RainViewer radar with TITAN color scheme (2) - red/orange/yellow thermal look
-        let urlString = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/\(path.z)/\(path.x)/\(path.y)/2/1_1.png"
-        return URL(string: urlString)!
     }
 }
 
@@ -132,7 +96,7 @@ class WeatherTileManager {
         case .clouds:
             return CloudCoverOverlay(timestamp: satelliteTimestamp)
         case .temperature:
-            return TemperatureOverlay()
+            return TemperatureOverlay(timestamp: radarTimestamp)
         }
     }
 

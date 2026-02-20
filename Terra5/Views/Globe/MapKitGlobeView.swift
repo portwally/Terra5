@@ -232,23 +232,30 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
                 let satelliteTimestamp = await WeatherRadarService.shared.getLatestSatelliteTimestamp()
                 NSLog("[TERRA5] MapKit: Got timestamps - radar: %d, satellite: %d", radarTimestamp, satelliteTimestamp)
 
+                // Check for valid timestamps
+                guard radarTimestamp > 0 else {
+                    NSLog("[TERRA5] MapKit: ERROR - Invalid radar timestamp, cannot add overlay")
+                    return
+                }
+
                 await MainActor.run {
                     switch layerType {
                     case .rain:
                         let rain = RainRadarOverlay(timestamp: radarTimestamp, colorScheme: 6)
-                        mapView.addOverlay(rain, level: .aboveLabels)
+                        mapView.addOverlay(rain, level: .aboveRoads)
                         self.rainOverlay = rain
                         NSLog("[TERRA5] MapKit: Rain overlay added (timestamp: %d)", radarTimestamp)
 
                     case .clouds:
-                        let clouds = CloudCoverOverlay(timestamp: satelliteTimestamp)
-                        mapView.addOverlay(clouds, level: .aboveLabels)
+                        let effectiveTimestamp = satelliteTimestamp > 0 ? satelliteTimestamp : radarTimestamp
+                        let clouds = CloudCoverOverlay(timestamp: effectiveTimestamp)
+                        mapView.addOverlay(clouds, level: .aboveRoads)
                         self.cloudOverlay = clouds
-                        NSLog("[TERRA5] MapKit: Cloud overlay added (timestamp: %d)", satelliteTimestamp)
+                        NSLog("[TERRA5] MapKit: Cloud overlay added (timestamp: %d)", effectiveTimestamp)
 
                     case .temperature:
                         let temp = TemperatureOverlay(timestamp: radarTimestamp)
-                        mapView.addOverlay(temp, level: .aboveLabels)
+                        mapView.addOverlay(temp, level: .aboveRoads)
                         self.temperatureOverlay = temp
                         NSLog("[TERRA5] MapKit: Temperature overlay added (timestamp: %d)", radarTimestamp)
                     }
