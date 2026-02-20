@@ -2,7 +2,7 @@
 //  AppState.swift
 //  Terra5
 //
-//  Global application state
+//  Global application state with persistence
 //
 
 import SwiftUI
@@ -10,17 +10,41 @@ import Combine
 
 @MainActor
 class AppState: ObservableObject {
+    // MARK: - Settings Keys
+    private enum SettingsKey {
+        static let visualMode = "terra5.visualMode"
+        static let sidebarExpanded = "terra5.sidebarExpanded"
+        static let activeLayers = "terra5.activeLayers"
+        static let lastCityIndex = "terra5.lastCityIndex"
+        static let lastLatitude = "terra5.lastLatitude"
+        static let lastLongitude = "terra5.lastLongitude"
+        static let lastAltitude = "terra5.lastAltitude"
+    }
+
     // MARK: - Visual State
-    @Published var visualMode: VisualMode = .normal
-    @Published var isSidebarExpanded: Bool = true
+    @Published var visualMode: VisualMode = .normal {
+        didSet { saveSettings() }
+    }
+    @Published var isSidebarExpanded: Bool = true {
+        didSet { saveSettings() }
+    }
     @Published var isPanopticActive: Bool = false
 
     // MARK: - Data Layers
-    @Published var activeLayers: Set<DataLayerType> = [.flights, .satellites, .earthquakes]
+    @Published var activeLayers: Set<DataLayerType> = [.flights, .satellites, .earthquakes] {
+        didSet { saveSettings() }
+    }
 
     // MARK: - Location State
-    @Published var currentCity: CityPreset = CityPreset.presets[0]
+    @Published var currentCity: CityPreset = CityPreset.presets[0] {
+        didSet { saveSettings() }
+    }
     @Published var selectedLandmark: Landmark?
+
+    // MARK: - Initialization
+    init() {
+        loadSettings()
+    }
 
     // MARK: - Camera State (updated from MapKit)
     @Published var cameraLatitude: Double = 38.9072
@@ -32,26 +56,38 @@ class AppState: ObservableObject {
     @Published var flights: [Flight] = []
     @Published var satellites: [Satellite] = []
     @Published var earthquakes: [Earthquake] = []
+    @Published var weatherRadars: [WeatherRadar] = []
+    @Published var weatherAlerts: [WeatherAlert] = []
+    @Published var cctvCameras: [CCTVCamera] = []
 
     // MARK: - Data Counts (computed)
     var flightCount: Int { flights.count }
     var satelliteCount: Int { satellites.count }
     var earthquakeCount: Int { earthquakes.count }
+    var weatherRadarCount: Int { weatherRadars.count }
+    var weatherAlertCount: Int { weatherAlerts.count }
+    var cctvCount: Int { cctvCameras.count }
 
     // MARK: - Timestamps
     @Published var flightsLastUpdate: Date?
     @Published var satellitesLastUpdate: Date?
     @Published var earthquakesLastUpdate: Date?
+    @Published var weatherLastUpdate: Date?
+    @Published var cctvLastUpdate: Date?
 
     // MARK: - Loading States
     @Published var isLoadingFlights: Bool = false
     @Published var isLoadingSatellites: Bool = false
     @Published var isLoadingEarthquakes: Bool = false
+    @Published var isLoadingWeather: Bool = false
+    @Published var isLoadingCCTV: Bool = false
 
     // MARK: - Error States
     @Published var flightsError: String?
     @Published var satellitesError: String?
     @Published var earthquakesError: String?
+    @Published var weatherError: String?
+    @Published var cctvError: String?
 
     // MARK: - Globe Ready State
     @Published var isGlobeReady: Bool = false
@@ -60,6 +96,61 @@ class AppState: ObservableObject {
     @Published var detectionCount: Int = 0
     @Published var detectionDensity: Double = 0
     @Published var detectionLatency: Double = 0
+    @Published var currentDetections: [PANOPTICService.Detection] = []
+    @Published var isDetectionRunning: Bool = false
+
+    private var detectionTimer: Timer?
+
+    func startDetection() {
+        guard isPanopticActive else { return }
+        isDetectionRunning = true
+
+        // Run detection every 2 seconds
+        detectionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.runDetection()
+            }
+        }
+
+        // Initial detection
+        Task {
+            await runDetection()
+        }
+    }
+
+    func stopDetection() {
+        detectionTimer?.invalidate()
+        detectionTimer = nil
+        isDetectionRunning = false
+        currentDetections = []
+        detectionCount = 0
+        detectionDensity = 0
+        detectionLatency = 0
+    }
+
+    private func runDetection() async {
+        let detections = await PANOPTICService.shared.runDetection(
+            latitude: cameraLatitude,
+            longitude: cameraLongitude,
+            altitude: cameraAltitude
+        )
+
+        currentDetections = detections
+        detectionCount = detections.count
+
+        let stats = await PANOPTICService.shared.getStats()
+        detectionDensity = stats.density
+        detectionLatency = stats.processingLatency
+    }
+
+    func togglePanoptic() {
+        isPanopticActive.toggle()
+        if isPanopticActive {
+            startDetection()
+        } else {
+            stopDetection()
+        }
+    }
 
     // MARK: - Data Manager
     private var dataManager: DataManager?
@@ -157,5 +248,104 @@ class AppState: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.timeZone = TimeZone(identifier: "UTC")
         return "REC " + formatter.string(from: Date()) + "Z"
+    }
+
+    // MARK: - Settings Persistence
+    private func saveSettings() {
+        let defaults = UserDefaults.standard
+
+        // Visual mode
+        defaults.set(visualMode.rawValue, forKey: SettingsKey.visualMode)
+
+        // Sidebar state
+        defaults.set(isSidebarExpanded, forKey: SettingsKey.sidebarExpanded)
+
+        // Active layers
+        let layerStrings = activeLayers.map { $0.rawValue }
+        defaults.set(layerStrings, forKey: SettingsKey.activeLayers)
+
+        // Current city (store index)
+        if let cityIndex = CityPreset.presets.firstIndex(where: { $0.id == currentCity.id }) {
+            defaults.set(cityIndex, forKey: SettingsKey.lastCityIndex)
+        }
+
+        // Camera position (save periodically)
+        defaults.set(cameraLatitude, forKey: SettingsKey.lastLatitude)
+        defaults.set(cameraLongitude, forKey: SettingsKey.lastLongitude)
+        defaults.set(cameraAltitude, forKey: SettingsKey.lastAltitude)
+    }
+
+    private func loadSettings() {
+        let defaults = UserDefaults.standard
+
+        // Visual mode
+        if let modeString = defaults.string(forKey: SettingsKey.visualMode),
+           let mode = VisualMode(rawValue: modeString) {
+            visualMode = mode
+        }
+
+        // Sidebar state
+        if defaults.object(forKey: SettingsKey.sidebarExpanded) != nil {
+            isSidebarExpanded = defaults.bool(forKey: SettingsKey.sidebarExpanded)
+        }
+
+        // Active layers
+        if let layerStrings = defaults.stringArray(forKey: SettingsKey.activeLayers) {
+            let layers = layerStrings.compactMap { DataLayerType(rawValue: $0) }
+            if !layers.isEmpty {
+                activeLayers = Set(layers)
+            }
+        }
+
+        // Current city
+        let cityIndex = defaults.integer(forKey: SettingsKey.lastCityIndex)
+        if cityIndex >= 0 && cityIndex < CityPreset.presets.count {
+            currentCity = CityPreset.presets[cityIndex]
+        }
+
+        // Camera position
+        if defaults.object(forKey: SettingsKey.lastLatitude) != nil {
+            cameraLatitude = defaults.double(forKey: SettingsKey.lastLatitude)
+            cameraLongitude = defaults.double(forKey: SettingsKey.lastLongitude)
+            cameraAltitude = defaults.double(forKey: SettingsKey.lastAltitude)
+
+            // Ensure valid altitude
+            if cameraAltitude < 1000 {
+                cameraAltitude = 10_000_000
+            }
+        }
+
+        print("Settings loaded: mode=\(visualMode.displayName), layers=\(activeLayers.count), city=\(currentCity.name)")
+    }
+
+    /// Save camera position (called less frequently to reduce writes)
+    func saveCameraPosition() {
+        let defaults = UserDefaults.standard
+        defaults.set(cameraLatitude, forKey: SettingsKey.lastLatitude)
+        defaults.set(cameraLongitude, forKey: SettingsKey.lastLongitude)
+        defaults.set(cameraAltitude, forKey: SettingsKey.lastAltitude)
+    }
+
+    /// Reset all settings to defaults
+    func resetSettings() {
+        visualMode = .normal
+        isSidebarExpanded = true
+        activeLayers = [.flights, .satellites, .earthquakes]
+        currentCity = CityPreset.presets[0]
+        cameraLatitude = 38.9072
+        cameraLongitude = -77.0369
+        cameraAltitude = 10_000_000
+
+        // Clear UserDefaults
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: SettingsKey.visualMode)
+        defaults.removeObject(forKey: SettingsKey.sidebarExpanded)
+        defaults.removeObject(forKey: SettingsKey.activeLayers)
+        defaults.removeObject(forKey: SettingsKey.lastCityIndex)
+        defaults.removeObject(forKey: SettingsKey.lastLatitude)
+        defaults.removeObject(forKey: SettingsKey.lastLongitude)
+        defaults.removeObject(forKey: SettingsKey.lastAltitude)
+
+        print("Settings reset to defaults")
     }
 }

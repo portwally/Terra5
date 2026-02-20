@@ -31,6 +31,14 @@ struct MainView: View {
                     MapKitGlobeView()
                         .environmentObject(appState)
 
+                    // PANOPTIC Detection overlay
+                    if appState.isPanopticActive {
+                        DetectionOverlayView(
+                            detections: appState.currentDetections,
+                            isActive: appState.isDetectionRunning
+                        )
+                    }
+
                     // HUD overlays
                     TacticalHUDView()
                         .environmentObject(appState)
@@ -49,6 +57,38 @@ struct MainView: View {
         }
         .environmentObject(appState)
         .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                appState.isSidebarExpanded.toggle()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .togglePanoptic)) { _ in
+            appState.togglePanoptic()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .setVisualMode)) { notification in
+            if let mode = notification.object as? VisualMode {
+                appState.visualMode = mode
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .flyToCity)) { notification in
+            if let city = notification.object as? CityPreset {
+                appState.selectCity(city)
+                appState.selectedLandmark = Landmark(
+                    name: city.name,
+                    latitude: city.latitude,
+                    longitude: city.longitude
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleLayer)) { notification in
+            if let layer = notification.object as? DataLayerType {
+                appState.toggleLayer(layer)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshAllData)) { _ in
+            appState.stopDataRefresh()
+            appState.startDataRefresh()
+        }
     }
 }
 
@@ -820,6 +860,22 @@ struct SidebarView: View {
                 .padding(.bottom, 8)
             }
 
+            Divider()
+                .background(Theme.border)
+
+            // PANOPTIC AI Detection
+            VStack(alignment: .leading, spacing: 8) {
+                Text("AI DETECTION")
+                    .font(Typography.labelFont)
+                    .foregroundColor(Theme.textMuted)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+
+                PANOPTICToggle()
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+            }
+
             Spacer()
         }
         .background(Theme.background)
@@ -846,7 +902,9 @@ struct DataLayerToggleRow: View {
         case .flights: return appState.flightCount
         case .satellites: return appState.satelliteCount
         case .earthquakes: return appState.earthquakeCount
-        default: return 0
+        case .weather: return appState.weatherRadarCount
+        case .cctv: return appState.cctvCount
+        case .traffic: return 0
         }
     }
 
@@ -856,7 +914,9 @@ struct DataLayerToggleRow: View {
         case .flights: date = appState.flightsLastUpdate
         case .satellites: date = appState.satellitesLastUpdate
         case .earthquakes: date = appState.earthquakesLastUpdate
-        default: date = nil
+        case .weather: date = appState.weatherLastUpdate
+        case .cctv: date = appState.cctvLastUpdate
+        case .traffic: date = nil
         }
 
         guard let date = date else { return "never" }
@@ -1019,6 +1079,75 @@ struct VisualModeButton: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - PANOPTIC Toggle
+struct PANOPTICToggle: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Main toggle button
+            Button(action: {
+                appState.togglePanoptic()
+            }) {
+                HStack {
+                    Image(systemName: "eye.trianglebadge.exclamationmark")
+                        .font(.system(size: 16))
+                    Text("PANOPTIC")
+                        .font(Typography.labelFont)
+                    Spacer()
+                    Text(appState.isPanopticActive ? "ACTIVE" : "STANDBY")
+                        .font(Typography.labelFont)
+                }
+                .foregroundColor(appState.isPanopticActive ? Theme.background : Theme.accent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(appState.isPanopticActive ? Theme.accent : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Theme.accent, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+
+            // Detection stats when active
+            if appState.isPanopticActive {
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DETECTIONS")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(Theme.textMuted)
+                        Text("\(appState.detectionCount)")
+                            .font(Typography.dataFont)
+                            .foregroundColor(Theme.accent)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("LATENCY")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(Theme.textMuted)
+                        Text(String(format: "%.0fms", appState.detectionLatency))
+                            .font(Typography.dataFont)
+                            .foregroundColor(Theme.accent)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DENSITY")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(Theme.textMuted)
+                        Text(String(format: "%.1f/f", appState.detectionDensity))
+                            .font(Typography.dataFont)
+                            .foregroundColor(Theme.accent)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
     }
 }
 

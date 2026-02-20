@@ -15,11 +15,15 @@ class DataManager {
     private var flightTimer: Timer?
     private var satelliteTimer: Timer?
     private var earthquakeTimer: Timer?
+    private var weatherTimer: Timer?
+    private var cctvTimer: Timer?
 
     // Refresh intervals
     private let flightInterval: TimeInterval = 15 // seconds
     private let satelliteInterval: TimeInterval = 60 // seconds
     private let earthquakeInterval: TimeInterval = 300 // 5 minutes
+    private let weatherInterval: TimeInterval = 300 // 5 minutes
+    private let cctvInterval: TimeInterval = 60 // 1 minute
 
     init(appState: AppState) {
         self.appState = appState
@@ -49,15 +53,31 @@ class DataManager {
                 await self?.fetchEarthquakes()
             }
         }
+
+        weatherTimer = Timer.scheduledTimer(withTimeInterval: weatherInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.fetchWeather()
+            }
+        }
+
+        cctvTimer = Timer.scheduledTimer(withTimeInterval: cctvInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.fetchCCTV()
+            }
+        }
     }
 
     func stopRefreshing() {
         flightTimer?.invalidate()
         satelliteTimer?.invalidate()
         earthquakeTimer?.invalidate()
+        weatherTimer?.invalidate()
+        cctvTimer?.invalidate()
         flightTimer = nil
         satelliteTimer = nil
         earthquakeTimer = nil
+        weatherTimer = nil
+        cctvTimer = nil
     }
 
     private func fetchAllData() async {
@@ -65,6 +85,8 @@ class DataManager {
             group.addTask { await self.fetchFlights() }
             group.addTask { await self.fetchSatellites() }
             group.addTask { await self.fetchEarthquakes() }
+            group.addTask { await self.fetchWeather() }
+            group.addTask { await self.fetchCCTV() }
         }
     }
 
@@ -131,6 +153,47 @@ class DataManager {
         appState.isLoadingEarthquakes = false
     }
 
+    private func fetchWeather() async {
+        guard let appState = appState,
+              appState.isLayerActive(.weather) else { return }
+
+        appState.isLoadingWeather = true
+        appState.weatherError = nil
+
+        do {
+            // Fetch radar stations
+            let radars = try await NOAAService.shared.fetchRadarStations()
+            appState.weatherRadars = radars
+
+            // Fetch weather alerts
+            let alerts = try await NOAAService.shared.fetchWeatherAlerts()
+            appState.weatherAlerts = alerts
+
+            appState.weatherLastUpdate = Date()
+            print("Fetched \(radars.count) radar stations, \(alerts.count) weather alerts")
+        } catch {
+            appState.weatherError = error.localizedDescription
+            print("Weather fetch error: \(error)")
+        }
+
+        appState.isLoadingWeather = false
+    }
+
+    private func fetchCCTV() async {
+        guard let appState = appState,
+              appState.isLayerActive(.cctv) else { return }
+
+        appState.isLoadingCCTV = true
+        appState.cctvError = nil
+
+        // Load sample CCTV cameras (static data for demo)
+        appState.cctvCameras = CCTVCamera.sampleCameras
+        appState.cctvLastUpdate = Date()
+        print("Loaded \(appState.cctvCameras.count) CCTV cameras")
+
+        appState.isLoadingCCTV = false
+    }
+
     // Manual refresh methods
     func refreshFlights() async {
         await fetchFlights()
@@ -142,6 +205,14 @@ class DataManager {
 
     func refreshEarthquakes() async {
         await fetchEarthquakes()
+    }
+
+    func refreshWeather() async {
+        await fetchWeather()
+    }
+
+    func refreshCCTV() async {
+        await fetchCCTV()
     }
 
     func refreshAll() async {
