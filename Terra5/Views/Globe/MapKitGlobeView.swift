@@ -85,6 +85,7 @@ struct MapKitGlobeView: NSViewRepresentable {
             satellites: appState.isLayerActive(.satellites) ? appState.satellites : [],
             earthquakes: appState.isLayerActive(.earthquakes) ? appState.earthquakes : [],
             showWeather: appState.isLayerActive(.weather),
+            weatherLayerType: appState.selectedWeatherLayer,
             cctvCameras: appState.isLayerActive(.cctv) ? appState.cctvCameras : []
         )
     }
@@ -107,7 +108,8 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
     // Weather tile overlays
     private var rainOverlay: RainRadarOverlay?
     private var cloudOverlay: CloudCoverOverlay?
-    private var weatherOverlayActive = false
+    private var temperatureOverlay: TemperatureOverlay?
+    private var currentWeatherLayerType: WeatherLayerType?
 
     init(appState: AppState) {
         self.appState = appState
@@ -131,6 +133,7 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         satellites: [Satellite],
         earthquakes: [Earthquake],
         showWeather: Bool,
+        weatherLayerType: WeatherLayerType,
         cctvCameras: [CCTVCamera]
     ) {
         guard let mapView = mapView else {
@@ -175,7 +178,7 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         }
 
         // Update weather tile overlays
-        updateWeatherOverlay(show: showWeather, on: mapView)
+        updateWeatherOverlay(show: showWeather, layerType: weatherLayerType, on: mapView)
 
         // Update CCTV cameras
         let newCCTVIds = Set(cctvCameras.map { $0.id })
@@ -191,47 +194,65 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         }
     }
 
-    private func updateWeatherOverlay(show: Bool, on mapView: MKMapView) {
-        if show && !weatherOverlayActive {
-            // Add weather overlays
-            NSLog("[TERRA5] MapKit: Adding weather tile overlays (rain + clouds)")
+    private func updateWeatherOverlay(show: Bool, layerType: WeatherLayerType, on mapView: MKMapView) {
+        // If weather is disabled, remove all overlays
+        if !show {
+            removeAllWeatherOverlays(from: mapView)
+            currentWeatherLayerType = nil
+            return
+        }
 
-            // Fetch latest timestamps and add overlays
+        // If layer type changed, update the overlay
+        if currentWeatherLayerType != layerType {
+            NSLog("[TERRA5] MapKit: Switching weather layer to %@", layerType.rawValue)
+
+            // Remove all existing weather overlays
+            removeAllWeatherOverlays(from: mapView)
+
+            // Add the selected overlay
             Task {
                 let radarTimestamp = await WeatherRadarService.shared.getLatestRadarTimestamp()
                 let satelliteTimestamp = await WeatherRadarService.shared.getLatestSatelliteTimestamp()
 
                 await MainActor.run {
-                    // Remove old overlays first
-                    if let old = rainOverlay { mapView.removeOverlay(old) }
-                    if let old = cloudOverlay { mapView.removeOverlay(old) }
+                    switch layerType {
+                    case .rain:
+                        let rain = RainRadarOverlay(timestamp: radarTimestamp, colorScheme: 6)
+                        mapView.addOverlay(rain, level: .aboveLabels)
+                        self.rainOverlay = rain
+                        NSLog("[TERRA5] MapKit: Rain overlay added (timestamp: %d)", radarTimestamp)
 
-                    // Add rain radar overlay
-                    let rain = RainRadarOverlay(timestamp: radarTimestamp, colorScheme: 6)
-                    mapView.addOverlay(rain, level: .aboveLabels)
-                    self.rainOverlay = rain
+                    case .clouds:
+                        let clouds = CloudCoverOverlay(timestamp: satelliteTimestamp)
+                        mapView.addOverlay(clouds, level: .aboveLabels)
+                        self.cloudOverlay = clouds
+                        NSLog("[TERRA5] MapKit: Cloud overlay added (timestamp: %d)", satelliteTimestamp)
 
-                    // Add cloud/satellite overlay (below rain)
-                    let clouds = CloudCoverOverlay(timestamp: satelliteTimestamp)
-                    mapView.addOverlay(clouds, level: .aboveRoads)
-                    self.cloudOverlay = clouds
+                    case .temperature:
+                        let temp = TemperatureOverlay()
+                        mapView.addOverlay(temp, level: .aboveLabels)
+                        self.temperatureOverlay = temp
+                        NSLog("[TERRA5] MapKit: Temperature overlay added")
+                    }
 
-                    self.weatherOverlayActive = true
-                    NSLog("[TERRA5] MapKit: Weather overlays added (radar: %d, satellite: %d)", radarTimestamp, satelliteTimestamp)
+                    self.currentWeatherLayerType = layerType
                 }
             }
-        } else if !show && weatherOverlayActive {
-            // Remove weather overlays
-            NSLog("[TERRA5] MapKit: Removing weather tile overlays")
-            if let rain = rainOverlay {
-                mapView.removeOverlay(rain)
-                rainOverlay = nil
-            }
-            if let clouds = cloudOverlay {
-                mapView.removeOverlay(clouds)
-                cloudOverlay = nil
-            }
-            weatherOverlayActive = false
+        }
+    }
+
+    private func removeAllWeatherOverlays(from mapView: MKMapView) {
+        if let rain = rainOverlay {
+            mapView.removeOverlay(rain)
+            rainOverlay = nil
+        }
+        if let clouds = cloudOverlay {
+            mapView.removeOverlay(clouds)
+            cloudOverlay = nil
+        }
+        if let temp = temperatureOverlay {
+            mapView.removeOverlay(temp)
+            temperatureOverlay = nil
         }
     }
 

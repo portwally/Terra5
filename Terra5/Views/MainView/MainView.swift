@@ -43,6 +43,16 @@ struct MainView: View {
                     TacticalHUDView()
                         .environmentObject(appState)
 
+                    // Weather layer picker (bottom center when weather is active)
+                    if appState.isLayerActive(.weather) {
+                        VStack {
+                            Spacer()
+                            WeatherLayerPicker()
+                                .environmentObject(appState)
+                                .padding(.bottom, 60)
+                        }
+                    }
+
                     // Visual mode overlay (scanlines for CRT, etc.)
                     VisualModeOverlay(mode: appState.visualMode)
                 }

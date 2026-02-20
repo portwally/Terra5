@@ -31,9 +31,12 @@ class AppState: ObservableObject {
     @Published var isPanopticActive: Bool = false
 
     // MARK: - Data Layers
-    @Published var activeLayers: Set<DataLayerType> = [.flights, .satellites, .earthquakes] {
+    @Published var activeLayers: Set<DataLayerType> = [] {
         didSet { saveSettings() }
     }
+
+    // MARK: - Weather Layer Selection
+    @Published var selectedWeatherLayer: WeatherLayerType = .rain
 
     // MARK: - Location State
     @Published var currentCity: CityPreset = CityPreset.presets[0] {
@@ -387,7 +390,7 @@ class AppState: ObservableObject {
     func resetSettings() {
         visualMode = .normal
         isSidebarExpanded = true
-        activeLayers = [.flights, .satellites, .earthquakes]
+        activeLayers = []
         currentCity = CityPreset.presets[0]
         cameraLatitude = 38.9072
         cameraLongitude = -77.0369
