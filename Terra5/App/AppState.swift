@@ -38,6 +38,9 @@ class AppState: ObservableObject {
     // MARK: - Weather Layer Selection
     @Published var selectedWeatherLayer: WeatherLayerType = .rain
 
+    // MARK: - Map Mode (3D Globe vs 2D Map)
+    @Published var is2DMapMode: Bool = false
+
     // MARK: - Location State
     @Published var currentCity: CityPreset = CityPreset.presets[0] {
         didSet { saveSettings() }

@@ -27,16 +27,13 @@ struct MainView: View {
 
                 // Globe container with HUD overlay
                 ZStack {
-                    // Native MapKit Globe (stays in 3D mode)
-                    MapKitGlobeView()
-                        .environmentObject(appState)
-
-                    // Weather image overlay (on top of 3D globe)
-                    if appState.isLayerActive(.weather) {
-                        WeatherImageOverlay(layerType: appState.selectedWeatherLayer)
-                            .environmentObject(appState)
-                            .allowsHitTesting(false)
-                    }
+                    // MapKit view (3D globe or 2D map depending on mode)
+                    MapKitGlobeView(
+                        is2DMode: appState.is2DMapMode,
+                        weatherActive: appState.isLayerActive(.weather),
+                        weatherLayerType: appState.selectedWeatherLayer
+                    )
+                    .environmentObject(appState)
 
                     // PANOPTIC Detection overlay
                     if appState.isPanopticActive {
@@ -50,13 +47,19 @@ struct MainView: View {
                     TacticalHUDView()
                         .environmentObject(appState)
 
-                    // Weather layer picker (bottom center when weather is active)
+                    // Weather controls (bottom center when weather is active)
                     if appState.isLayerActive(.weather) {
                         VStack {
                             Spacer()
-                            WeatherLayerPicker()
-                                .environmentObject(appState)
-                                .padding(.bottom, 60)
+                            VStack(spacing: 8) {
+                                // 2D/3D toggle for weather
+                                MapModeToggle()
+                                    .environmentObject(appState)
+                                // Weather layer picker
+                                WeatherLayerPicker()
+                                    .environmentObject(appState)
+                            }
+                            .padding(.bottom, 60)
                         }
                     }
 

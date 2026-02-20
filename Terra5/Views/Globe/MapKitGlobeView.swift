@@ -11,6 +11,11 @@ import MapKit
 struct MapKitGlobeView: NSViewRepresentable {
     @EnvironmentObject var appState: AppState
 
+    // Parameters for weather overlay (only works in 2D mode)
+    let is2DMode: Bool
+    let weatherActive: Bool
+    let weatherLayerType: WeatherLayerType
+
     func makeNSView(context: Context) -> MKMapView {
         let mapView = MKMapView()
 
@@ -59,17 +64,26 @@ struct MapKitGlobeView: NSViewRepresentable {
     }
 
     func updateNSView(_ mapView: MKMapView, context: Context) {
-        // Debug: check if weather/cctv data exists
-        if appState.weatherRadars.count > 0 || appState.cctvCameras.count > 0 {
-            print("[DEBUG] updateNSView: weather=\(appState.weatherRadars.count), cctv=\(appState.cctvCameras.count), weatherActive=\(appState.isLayerActive(.weather)), cctvActive=\(appState.isLayerActive(.cctv))")
+        // Handle map mode switching (3D globe vs 2D flat)
+        let targetMapType: MKMapType = is2DMode ? .satellite : .satelliteFlyover
+        if mapView.mapType != targetMapType {
+            mapView.mapType = targetMapType
+            NSLog("[TERRA5] MapKit: Switched to %@ mode", is2DMode ? "2D satellite" : "3D globe")
         }
+
+        // Handle weather overlay (only in 2D mode)
+        context.coordinator.updateWeatherOverlay(
+            show: weatherActive && is2DMode,
+            layerType: weatherLayerType,
+            on: mapView
+        )
 
         // Handle fly-to requests
         if let landmark = appState.selectedLandmark {
             let camera = MKMapCamera(
                 lookingAtCenter: CLLocationCoordinate2D(latitude: landmark.latitude, longitude: landmark.longitude),
                 fromDistance: landmark.zoomAltitude * 10,
-                pitch: 45,
+                pitch: is2DMode ? 0 : 45,
                 heading: 0
             )
             mapView.setCamera(camera, animated: true)
@@ -80,7 +94,6 @@ struct MapKitGlobeView: NSViewRepresentable {
         }
 
         // Update annotations based on active layers and data
-        // Weather is handled separately by WeatherImageOverlay
         context.coordinator.updateAnnotations(
             flights: appState.isLayerActive(.flights) ? appState.flights : [],
             satellites: appState.isLayerActive(.satellites) ? appState.satellites : [],
@@ -104,7 +117,10 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
     private var currentEarthquakeIds: Set<String> = []
     private var currentCCTVIds: Set<String> = []
 
-    // Weather is now handled by SwiftUI overlay (WeatherImageOverlay)
+    // Weather tile overlay (only used in 2D mode)
+    private var weatherOverlay: MKTileOverlay?
+    private var currentWeatherLayerType: WeatherLayerType?
+    private var weatherTimestamp: Int = 0
 
     init(appState: AppState) {
         self.appState = appState
@@ -184,8 +200,60 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         }
     }
 
-    // Weather overlays are now handled by WeatherImageOverlay SwiftUI view
-    // This keeps the 3D globe intact without switching to 2D mode
+    // MARK: - Weather Overlay (2D Mode Only)
+    func updateWeatherOverlay(show: Bool, layerType: WeatherLayerType, on mapView: MKMapView) {
+        // Remove overlay if weather disabled or in 3D mode
+        if !show {
+            if let overlay = weatherOverlay {
+                mapView.removeOverlay(overlay)
+                weatherOverlay = nil
+                currentWeatherLayerType = nil
+                NSLog("[TERRA5] MapKit: Weather overlay removed")
+            }
+            return
+        }
+
+        // Check if we need to update the overlay
+        if currentWeatherLayerType != layerType {
+            // Remove existing overlay
+            if let overlay = weatherOverlay {
+                mapView.removeOverlay(overlay)
+                weatherOverlay = nil
+            }
+
+            // Fetch timestamp and add new overlay
+            Task {
+                let timestamp = await WeatherRadarService.shared.getLatestRadarTimestamp()
+                guard timestamp > 0 else {
+                    NSLog("[TERRA5] MapKit: Invalid timestamp, cannot add weather overlay")
+                    return
+                }
+
+                await MainActor.run {
+                    // Create overlay based on layer type (all use radar since satellite returns 404)
+                    let colorScheme: Int
+                    switch layerType {
+                    case .rain: colorScheme = 6      // Rainbow
+                    case .clouds: colorScheme = 1   // Universal blue (cloud-like)
+                    case .temperature: colorScheme = 2  // TITAN (thermal)
+                    }
+
+                    let template = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/{z}/{x}/{y}/\(colorScheme)/1_1.png"
+                    let overlay = MKTileOverlay(urlTemplate: template)
+                    overlay.canReplaceMapContent = false
+                    overlay.minimumZ = 1
+                    overlay.maximumZ = 12
+
+                    mapView.addOverlay(overlay, level: .aboveRoads)
+                    self.weatherOverlay = overlay
+                    self.currentWeatherLayerType = layerType
+                    self.weatherTimestamp = timestamp
+
+                    NSLog("[TERRA5] MapKit: Weather overlay added (%@, colorScheme=%d, timestamp=%d)", layerType.rawValue, colorScheme, timestamp)
+                }
+            }
+        }
+    }
 
     func flyTo(latitude: Double, longitude: Double, altitude: Double) {
         guard let mapView = mapView else { return }
@@ -228,6 +296,15 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         return nil
     }
 
+    // MARK: - Overlay Rendering
+    func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+        if let tileOverlay = overlay as? MKTileOverlay {
+            let renderer = MKTileOverlayRenderer(tileOverlay: tileOverlay)
+            renderer.alpha = 0.7
+            return renderer
+        }
+        return MKOverlayRenderer(overlay: overlay)
+    }
 }
 
 // MARK: - Flight Annotation
@@ -638,7 +715,7 @@ class CCTVAnnotationView: MKAnnotationView {
 }
 
 #Preview {
-    MapKitGlobeView()
+    MapKitGlobeView(is2DMode: false, weatherActive: false, weatherLayerType: .rain)
         .environmentObject(AppState())
         .frame(width: 800, height: 600)
 }
