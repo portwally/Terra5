@@ -58,6 +58,7 @@ class RainRadarOverlay: MKTileOverlay {
         // https://tilecache.rainviewer.com/v2/radar/{timestamp}/{size}/{z}/{x}/{y}/{color}/{options}.png
         // options: 1_1 = smooth + snow
         let urlString = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/\(path.z)/\(path.x)/\(path.y)/\(colorScheme)/1_1.png"
+        NSLog("[TERRA5] Rain tile URL: %@", urlString)
         return URL(string: urlString)!
     }
 }
@@ -81,24 +82,32 @@ class CloudCoverOverlay: MKTileOverlay {
     override func url(forTilePath path: MKTileOverlayPath) -> URL {
         // RainViewer satellite IR tiles (shows cloud cover)
         let urlString = "https://tilecache.rainviewer.com/v2/satellite/\(timestamp)/256/\(path.z)/\(path.x)/\(path.y)/0/0_0.png"
+        NSLog("[TERRA5] Cloud tile URL: %@", urlString)
         return URL(string: urlString)!
     }
 }
 
-// MARK: - Temperature Overlay (OpenWeatherMap - requires API key, using fallback)
+// MARK: - Temperature Overlay (using radar with thermal color scheme)
 class TemperatureOverlay: MKTileOverlay {
-    // Using NOAA GFS temperature data via Open-Meteo (no API key needed)
-    init() {
+    // Using RainViewer radar tiles with TITAN color scheme (red/orange/yellow)
+    // This approximates a thermal view of precipitation
+    private var timestamp: Int
+
+    init(timestamp: Int? = nil) {
+        self.timestamp = timestamp ?? Int(Date().timeIntervalSince1970)
         super.init(urlTemplate: nil)
         self.canReplaceMapContent = false
         self.minimumZ = 1
-        self.maximumZ = 8
+        self.maximumZ = 12
+    }
+
+    func updateTimestamp(_ newTimestamp: Int) {
+        self.timestamp = newTimestamp
     }
 
     override func url(forTilePath path: MKTileOverlayPath) -> URL {
-        // Using Windy tiles for temperature visualization (free for limited use)
-        // Alternative: Open-Meteo tiles
-        let urlString = "https://tiles.windy.com/tiles/v10.0/temp/\(path.z)/\(path.x)/\(path.y).png"
+        // RainViewer radar with TITAN color scheme (2) - red/orange/yellow thermal look
+        let urlString = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/\(path.z)/\(path.x)/\(path.y)/2/1_1.png"
         return URL(string: urlString)!
     }
 }
@@ -207,9 +216,15 @@ actor WeatherRadarService {
     func getLatestRadarTimestamp() async -> Int {
         do {
             let (radar, _) = try await fetchTimestamps()
-            return radar.last ?? Int(Date().timeIntervalSince1970)
+            if let latest = radar.last {
+                NSLog("[TERRA5] WeatherRadarService: Returning radar timestamp %d", latest)
+                return latest
+            }
+            NSLog("[TERRA5] WeatherRadarService: No radar timestamps available!")
+            return 0
         } catch {
-            return Int(Date().timeIntervalSince1970)
+            NSLog("[TERRA5] WeatherRadarService: Error fetching radar timestamps: %@", error.localizedDescription)
+            return 0
         }
     }
 
@@ -217,9 +232,21 @@ actor WeatherRadarService {
     func getLatestSatelliteTimestamp() async -> Int {
         do {
             let (_, satellite) = try await fetchTimestamps()
-            return satellite.last ?? Int(Date().timeIntervalSince1970)
+            if let latest = satellite.last {
+                NSLog("[TERRA5] WeatherRadarService: Returning satellite timestamp %d", latest)
+                return latest
+            }
+            // Fall back to radar timestamp if satellite is empty
+            NSLog("[TERRA5] WeatherRadarService: No satellite timestamps, trying radar...")
+            let (radar, _) = try await fetchTimestamps()
+            if let latest = radar.last {
+                NSLog("[TERRA5] WeatherRadarService: Using radar timestamp as fallback %d", latest)
+                return latest
+            }
+            return 0
         } catch {
-            return Int(Date().timeIntervalSince1970)
+            NSLog("[TERRA5] WeatherRadarService: Error fetching satellite timestamps: %@", error.localizedDescription)
+            return 0
         }
     }
 

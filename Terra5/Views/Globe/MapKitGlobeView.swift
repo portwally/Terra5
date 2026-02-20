@@ -204,7 +204,18 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         if !show {
             removeAllWeatherOverlays(from: mapView)
             currentWeatherLayerType = nil
+            // Switch back to 3D satellite flyover
+            if mapView.mapType != .satelliteFlyover {
+                mapView.mapType = .satelliteFlyover
+                NSLog("[TERRA5] MapKit: Switched back to satelliteFlyover mode")
+            }
             return
+        }
+
+        // Switch to 2D satellite mode for weather overlays (3D doesn't support tile overlays well)
+        if mapView.mapType != .satellite {
+            mapView.mapType = .satellite
+            NSLog("[TERRA5] MapKit: Switched to 2D satellite mode for weather overlay")
         }
 
         // If layer type changed, update the overlay
@@ -216,8 +227,10 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
 
             // Add the selected overlay
             Task {
+                NSLog("[TERRA5] MapKit: Fetching weather timestamps...")
                 let radarTimestamp = await WeatherRadarService.shared.getLatestRadarTimestamp()
                 let satelliteTimestamp = await WeatherRadarService.shared.getLatestSatelliteTimestamp()
+                NSLog("[TERRA5] MapKit: Got timestamps - radar: %d, satellite: %d", radarTimestamp, satelliteTimestamp)
 
                 await MainActor.run {
                     switch layerType {
@@ -234,10 +247,10 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
                         NSLog("[TERRA5] MapKit: Cloud overlay added (timestamp: %d)", satelliteTimestamp)
 
                     case .temperature:
-                        let temp = TemperatureOverlay()
+                        let temp = TemperatureOverlay(timestamp: radarTimestamp)
                         mapView.addOverlay(temp, level: .aboveLabels)
                         self.temperatureOverlay = temp
-                        NSLog("[TERRA5] MapKit: Temperature overlay added")
+                        NSLog("[TERRA5] MapKit: Temperature overlay added (timestamp: %d)", radarTimestamp)
                     }
 
                     self.currentWeatherLayerType = layerType
@@ -304,7 +317,9 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
 
     // MARK: - Overlay Rendering
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+        NSLog("[TERRA5] MapKit: rendererFor overlay called, type: %@", String(describing: type(of: overlay)))
         if let tileOverlay = overlay as? MKTileOverlay {
+            NSLog("[TERRA5] MapKit: Creating tile overlay renderer")
             let renderer = MKTileOverlayRenderer(tileOverlay: tileOverlay)
             renderer.alpha = 0.7  // Semi-transparent
             return renderer
