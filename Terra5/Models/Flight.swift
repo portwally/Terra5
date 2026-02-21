@@ -39,14 +39,9 @@ struct Flight: Identifiable, Equatable {
 }
 
 // MARK: - OpenSky API Response
-struct OpenSkyResponse: Codable {
-    let time: Int
-    let states: [[OpenSkyState]]?
-
-    struct OpenSkyState: Codable {
-        // OpenSky returns arrays, not objects
-    }
-}
+// Note: OpenSky returns state vectors as heterogeneous arrays (not objects),
+// so we parse them manually via JSONSerialization in OpenSkyService.
+// A Codable model is not feasible because the array elements have mixed types.
 
 extension Flight {
     /// Parse from OpenSky state vector array

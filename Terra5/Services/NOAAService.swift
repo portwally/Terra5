@@ -59,7 +59,8 @@ actor NOAAService {
 
         var request = URLRequest(url: url)
         request.setValue("application/geo+json", forHTTPHeaderField: "Accept")
-        request.setValue("Terra5/1.0 (contact@example.com)", forHTTPHeaderField: "User-Agent")
+        // NOAA API terms require a valid contact email in User-Agent
+        request.setValue("Terra5/1.0 (walter.tengler@gmail.com)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 30
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -101,9 +102,9 @@ actor NOAAService {
             print("NOAAService: Fetched \(alerts.count) weather alerts")
             return alerts
         } catch {
-            print("NOAAService: Alert parsing error: \(error)")
-            // Return empty array on parsing failure
-            return []
+            NSLog("[TERRA5] NOAAService: Alert parsing error: %@", error.localizedDescription)
+            // Propagate parsing errors so callers can distinguish "no alerts" from "failed to parse"
+            throw NOAAError.parsingError(error)
         }
     }
 
@@ -160,13 +161,13 @@ struct NOAAAlertProperties: Codable {
 enum NOAAError: LocalizedError {
     case invalidURL
     case invalidResponse
-    case parsingError
+    case parsingError(Error)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid NOAA API URL"
         case .invalidResponse: return "Invalid response from NOAA"
-        case .parsingError: return "Failed to parse weather data"
+        case .parsingError(let underlying): return "Failed to parse weather data: \(underlying.localizedDescription)"
         }
     }
 }

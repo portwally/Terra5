@@ -67,7 +67,8 @@ enum AppConfig {
 
 // MARK: - City Presets
 struct CityPreset: Identifiable, Hashable {
-    let id = UUID()
+    /// Use the city name as a stable identifier so equality/persistence works across launches
+    var id: String { name }
     let name: String
     let latitude: Double
     let longitude: Double
@@ -172,7 +173,8 @@ struct CityPreset: Identifiable, Hashable {
 }
 
 struct Landmark: Identifiable, Hashable {
-    let id = UUID()
+    /// Use the landmark name as a stable identifier
+    var id: String { name }
     let name: String
     let latitude: Double
     let longitude: Double
@@ -237,7 +239,7 @@ enum DataLayerType: String, CaseIterable, Identifiable {
         case .earthquakes: return "Earthquakes (24h)"
         case .traffic: return "Street Traffic"
         case .weather: return "Weather Radar"
-        case .cctv: return "CCTV Mesh"
+        case .cctv: return "CCTV Cameras"
         }
     }
 
@@ -258,8 +260,8 @@ enum DataLayerType: String, CaseIterable, Identifiable {
         case .satellites: return "CelesTrak"
         case .earthquakes: return "USGS"
         case .traffic: return "OpenStreetMap"
-        case .weather: return "NOAA NEXRAD"
-        case .cctv: return "CCTV Mesh"
+        case .weather: return "RainViewer / NASA"
+        case .cctv: return "insecam.org"
         }
     }
 }
@@ -279,7 +281,7 @@ extension Color {
         case 8: // ARGB (32-bit)
             (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
         default:
-            (a, r, g, b) = (1, 1, 1, 0)
+            (a, r, g, b) = (255, 0, 0, 0) // Opaque black as fallback
         }
         self.init(
             .sRGB,

@@ -71,9 +71,9 @@ struct MapKitGlobeView: NSViewRepresentable {
             NSLog("[TERRA5] MapKit: Switched to %@ mode", is2DMode ? "2D satellite" : "3D globe")
         }
 
-        // Handle weather overlay (only in 2D mode)
+        // Handle weather overlay (works in both 2D and 3D modes)
         context.coordinator.updateWeatherOverlay(
-            show: weatherActive && is2DMode,
+            show: weatherActive,
             layerType: weatherLayerType,
             on: mapView
         )
@@ -200,9 +200,9 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         }
     }
 
-    // MARK: - Weather Overlay (2D Mode Only)
+    // MARK: - Weather Overlay
     func updateWeatherOverlay(show: Bool, layerType: WeatherLayerType, on mapView: MKMapView) {
-        // Remove overlay if weather disabled or in 3D mode
+        // Remove overlay if weather disabled
         if !show {
             if let overlay = weatherOverlay {
                 mapView.removeOverlay(overlay)
@@ -215,41 +215,47 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
 
         // Check if we need to update the overlay
         if currentWeatherLayerType != layerType {
-            // Remove existing overlay
-            if let overlay = weatherOverlay {
-                mapView.removeOverlay(overlay)
-                weatherOverlay = nil
+            NSLog("[TERRA5] MapKit: Layer change detected: %@ -> %@",
+                  currentWeatherLayerType?.rawValue ?? "none", layerType.rawValue)
+
+            // Remove ALL tile overlays to ensure clean state
+            let allOverlays = mapView.overlays.filter { $0 is MKTileOverlay }
+            if !allOverlays.isEmpty {
+                mapView.removeOverlays(allOverlays)
+                NSLog("[TERRA5] MapKit: Removed %d tile overlay(s)", allOverlays.count)
             }
+            weatherOverlay = nil
+
+            // Mark as updating to prevent race conditions
+            currentWeatherLayerType = layerType
 
             // Fetch timestamp and add new overlay
             Task {
-                let timestamp = await WeatherRadarService.shared.getLatestRadarTimestamp()
-                guard timestamp > 0 else {
-                    NSLog("[TERRA5] MapKit: Invalid timestamp, cannot add weather overlay")
+                // Get radar timestamps
+                let radarTimestamps: [Int]
+                do {
+                    (radarTimestamps, _) = try await WeatherRadarService.shared.fetchTimestamps()
+                } catch {
+                    NSLog("[TERRA5] MapKit: Failed to fetch weather timestamps: %@", error.localizedDescription)
                     return
                 }
 
                 await MainActor.run {
-                    // Create overlay based on layer type (all use radar since satellite returns 404)
-                    let colorScheme: Int
-                    switch layerType {
-                    case .rain: colorScheme = 6      // Rainbow
-                    case .clouds: colorScheme = 1   // Universal blue (cloud-like)
-                    case .temperature: colorScheme = 2  // TITAN (thermal)
+                    guard let radarTs = radarTimestamps.last else {
+                        NSLog("[TERRA5] MapKit: No radar timestamp available")
+                        return
                     }
 
-                    let template = "https://tilecache.rainviewer.com/v2/radar/\(timestamp)/256/{z}/{x}/{y}/\(colorScheme)/1_1.png"
-                    let overlay = MKTileOverlay(urlTemplate: template)
-                    overlay.canReplaceMapContent = false
-                    overlay.minimumZ = 1
-                    overlay.maximumZ = 12
+                    // Use custom tile overlay that generates unique URLs per layer type
+                    // This ensures MapKit doesn't use cached tiles from a different layer
+                    let overlay = WeatherTileOverlay(layerType: layerType, timestamp: radarTs)
 
-                    mapView.addOverlay(overlay, level: .aboveRoads)
+                    mapView.addOverlay(overlay, level: .aboveLabels)
                     self.weatherOverlay = overlay
-                    self.currentWeatherLayerType = layerType
-                    self.weatherTimestamp = timestamp
+                    self.weatherTimestamp = radarTs
 
-                    NSLog("[TERRA5] MapKit: Weather overlay added (%@, colorScheme=%d, timestamp=%d)", layerType.rawValue, colorScheme, timestamp)
+                    NSLog("[TERRA5] MapKit: Weather overlay added (%@) with timestamp %d, id: %@",
+                          layerType.rawValue, radarTs, overlay.uniqueId)
                 }
             }
         }
@@ -294,6 +300,21 @@ class MapKitCoordinator: NSObject, MKMapViewDelegate {
         }
 
         return nil
+    }
+
+    // MARK: - Annotation Selection
+    func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+        guard let annotation = view.annotation else { return }
+        if let cctvAnnotation = annotation as? CCTVAnnotation {
+            let cam = cctvAnnotation.camera
+            NSLog("[TERRA5-CCTV] Selected camera: %@ (%@) — feedUrl: %@", cam.id, cam.name, cam.feedUrl ?? "nil")
+            // Open live stream popup for selected CCTV camera
+            Task { @MainActor in
+                appState.selectedCCTVCamera = cam
+            }
+            // Deselect to allow re-selection
+            mapView.deselectAnnotation(annotation, animated: false)
+        }
     }
 
     // MARK: - Overlay Rendering
@@ -362,27 +383,24 @@ class FlightAnnotationView: MKAnnotationView {
 
     private func rotateImage(_ image: NSImage, byDegrees degrees: CGFloat) -> NSImage {
         let rotatedSize = image.size
-        let rotatedImage = NSImage(size: rotatedSize)
-
-        rotatedImage.lockFocus()
-        let transform = NSAffineTransform()
-        transform.translateX(by: rotatedSize.width / 2, yBy: rotatedSize.height / 2)
-        transform.rotate(byDegrees: degrees - 90) // Adjust for airplane icon orientation
-        transform.translateX(by: -rotatedSize.width / 2, yBy: -rotatedSize.height / 2)
-        transform.concat()
-        image.draw(in: NSRect(origin: .zero, size: rotatedSize))
-        rotatedImage.unlockFocus()
-
-        return rotatedImage
+        return NSImage(size: rotatedSize, flipped: false) { _ in
+            let transform = NSAffineTransform()
+            transform.translateX(by: rotatedSize.width / 2, yBy: rotatedSize.height / 2)
+            transform.rotate(byDegrees: degrees - 90) // Adjust for airplane icon orientation
+            transform.translateX(by: -rotatedSize.width / 2, yBy: -rotatedSize.height / 2)
+            transform.concat()
+            image.draw(in: NSRect(origin: .zero, size: rotatedSize))
+            return true
+        }
     }
 
     private func tintImage(_ image: NSImage, color: NSColor) -> NSImage {
-        let tintedImage = image.copy() as! NSImage
-        tintedImage.lockFocus()
-        color.set()
-        NSRect(origin: .zero, size: image.size).fill(using: .sourceAtop)
-        tintedImage.unlockFocus()
-        return tintedImage
+        return NSImage(size: image.size, flipped: false) { rect in
+            image.draw(in: rect)
+            color.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
     }
 }
 
@@ -430,71 +448,70 @@ class SatelliteAnnotationView: MKAnnotationView {
         let size: CGFloat = 20
         let color = NSColor(Color(hex: "#ffaa00"))
 
-        // Draw custom satellite icon
-        let satelliteImage = NSImage(size: NSSize(width: size, height: size))
-        satelliteImage.lockFocus()
+        // Draw custom satellite icon using modern drawing handler
+        let satelliteImage = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
+            // Main body (center rectangle)
+            let bodyWidth: CGFloat = 6
+            let bodyHeight: CGFloat = 4
+            let bodyRect = NSRect(
+                x: (size - bodyWidth) / 2,
+                y: (size - bodyHeight) / 2,
+                width: bodyWidth,
+                height: bodyHeight
+            )
+            color.setFill()
+            NSBezierPath(roundedRect: bodyRect, xRadius: 1, yRadius: 1).fill()
 
-        // Main body (center rectangle)
-        let bodyWidth: CGFloat = 6
-        let bodyHeight: CGFloat = 4
-        let bodyRect = NSRect(
-            x: (size - bodyWidth) / 2,
-            y: (size - bodyHeight) / 2,
-            width: bodyWidth,
-            height: bodyHeight
-        )
-        color.setFill()
-        NSBezierPath(roundedRect: bodyRect, xRadius: 1, yRadius: 1).fill()
+            // Left solar panel
+            let panelWidth: CGFloat = 5
+            let panelHeight: CGFloat = 8
+            let leftPanel = NSRect(
+                x: (size - bodyWidth) / 2 - panelWidth - 1,
+                y: (size - panelHeight) / 2,
+                width: panelWidth,
+                height: panelHeight
+            )
+            color.withAlphaComponent(0.8).setFill()
+            NSBezierPath(rect: leftPanel).fill()
+            color.setStroke()
+            let leftPath = NSBezierPath(rect: leftPanel)
+            leftPath.lineWidth = 0.5
+            leftPath.stroke()
 
-        // Left solar panel
-        let panelWidth: CGFloat = 5
-        let panelHeight: CGFloat = 8
-        let leftPanel = NSRect(
-            x: (size - bodyWidth) / 2 - panelWidth - 1,
-            y: (size - panelHeight) / 2,
-            width: panelWidth,
-            height: panelHeight
-        )
-        color.withAlphaComponent(0.8).setFill()
-        NSBezierPath(rect: leftPanel).fill()
-        color.setStroke()
-        let leftPath = NSBezierPath(rect: leftPanel)
-        leftPath.lineWidth = 0.5
-        leftPath.stroke()
+            // Right solar panel
+            let rightPanel = NSRect(
+                x: (size + bodyWidth) / 2 + 1,
+                y: (size - panelHeight) / 2,
+                width: panelWidth,
+                height: panelHeight
+            )
+            color.withAlphaComponent(0.8).setFill()
+            NSBezierPath(rect: rightPanel).fill()
+            let rightPath = NSBezierPath(rect: rightPanel)
+            rightPath.lineWidth = 0.5
+            rightPath.stroke()
 
-        // Right solar panel
-        let rightPanel = NSRect(
-            x: (size + bodyWidth) / 2 + 1,
-            y: (size - panelHeight) / 2,
-            width: panelWidth,
-            height: panelHeight
-        )
-        color.withAlphaComponent(0.8).setFill()
-        NSBezierPath(rect: rightPanel).fill()
-        let rightPath = NSBezierPath(rect: rightPanel)
-        rightPath.lineWidth = 0.5
-        rightPath.stroke()
+            // Antenna
+            let antennaPath = NSBezierPath()
+            antennaPath.move(to: NSPoint(x: size / 2, y: (size + bodyHeight) / 2))
+            antennaPath.line(to: NSPoint(x: size / 2, y: (size + bodyHeight) / 2 + 3))
+            antennaPath.lineWidth = 1
+            color.setStroke()
+            antennaPath.stroke()
 
-        // Antenna
-        let antennaPath = NSBezierPath()
-        antennaPath.move(to: NSPoint(x: size / 2, y: (size + bodyHeight) / 2))
-        antennaPath.line(to: NSPoint(x: size / 2, y: (size + bodyHeight) / 2 + 3))
-        antennaPath.lineWidth = 1
-        color.setStroke()
-        antennaPath.stroke()
+            // Antenna dish
+            let dishSize: CGFloat = 3
+            let dishRect = NSRect(
+                x: size / 2 - dishSize / 2,
+                y: (size + bodyHeight) / 2 + 2,
+                width: dishSize,
+                height: dishSize
+            )
+            color.setFill()
+            NSBezierPath(ovalIn: dishRect).fill()
 
-        // Antenna dish
-        let dishSize: CGFloat = 3
-        let dishRect = NSRect(
-            x: size / 2 - dishSize / 2,
-            y: (size + bodyHeight) / 2 + 2,
-            width: dishSize,
-            height: dishSize
-        )
-        color.setFill()
-        NSBezierPath(ovalIn: dishRect).fill()
-
-        satelliteImage.unlockFocus()
+            return true
+        }
         self.image = satelliteImage
     }
 }
@@ -556,62 +573,61 @@ class EarthquakeAnnotationView: MKAnnotationView {
             color = NSColor(Color(hex: "#ff3333"))
         }
 
-        // Create seismic wave icon
-        let earthquakeImage = NSImage(size: NSSize(width: baseSize, height: baseSize))
-        earthquakeImage.lockFocus()
+        // Create seismic wave icon using modern drawing handler
+        let earthquakeImage = NSImage(size: NSSize(width: baseSize, height: baseSize), flipped: false) { _ in
+            let center = NSPoint(x: baseSize / 2, y: baseSize / 2)
 
-        let center = NSPoint(x: baseSize / 2, y: baseSize / 2)
+            // Draw concentric circles (seismic waves)
+            let numRings = 3
+            for i in 0..<numRings {
+                let ringRadius = baseSize / 2 - CGFloat(i) * (baseSize / 8)
+                let opacity = 0.3 + Double(numRings - i) * 0.2
 
-        // Draw concentric circles (seismic waves)
-        let numRings = 3
-        for i in 0..<numRings {
-            let ringRadius = baseSize / 2 - CGFloat(i) * (baseSize / 8)
-            let opacity = 0.3 + Double(numRings - i) * 0.2
+                let ringRect = NSRect(
+                    x: center.x - ringRadius,
+                    y: center.y - ringRadius,
+                    width: ringRadius * 2,
+                    height: ringRadius * 2
+                )
 
-            let ringRect = NSRect(
-                x: center.x - ringRadius,
-                y: center.y - ringRadius,
-                width: ringRadius * 2,
-                height: ringRadius * 2
+                color.withAlphaComponent(opacity).setStroke()
+                let ringPath = NSBezierPath(ovalIn: ringRect)
+                ringPath.lineWidth = 1.5
+                ringPath.stroke()
+            }
+
+            // Draw center epicenter dot
+            let epicenterSize: CGFloat = baseSize / 4
+            let epicenterRect = NSRect(
+                x: center.x - epicenterSize / 2,
+                y: center.y - epicenterSize / 2,
+                width: epicenterSize,
+                height: epicenterSize
             )
+            color.setFill()
+            NSBezierPath(ovalIn: epicenterRect).fill()
 
-            color.withAlphaComponent(opacity).setStroke()
-            let ringPath = NSBezierPath(ovalIn: ringRect)
-            ringPath.lineWidth = 1.5
-            ringPath.stroke()
+            // Draw seismic wave lines (like a zigzag)
+            let wavePath = NSBezierPath()
+            let waveWidth = baseSize * 0.6
+            let waveHeight: CGFloat = 4
+            let startX = center.x - waveWidth / 2
+            let startY = center.y - baseSize / 3
+
+            wavePath.move(to: NSPoint(x: startX, y: startY))
+            let segments = 6
+            for j in 0..<segments {
+                let x = startX + CGFloat(j + 1) * (waveWidth / CGFloat(segments))
+                let y = startY + (j % 2 == 0 ? waveHeight : -waveHeight)
+                wavePath.line(to: NSPoint(x: x, y: y))
+            }
+
+            color.setStroke()
+            wavePath.lineWidth = 1.5
+            wavePath.stroke()
+
+            return true
         }
-
-        // Draw center epicenter dot
-        let epicenterSize: CGFloat = baseSize / 4
-        let epicenterRect = NSRect(
-            x: center.x - epicenterSize / 2,
-            y: center.y - epicenterSize / 2,
-            width: epicenterSize,
-            height: epicenterSize
-        )
-        color.setFill()
-        NSBezierPath(ovalIn: epicenterRect).fill()
-
-        // Draw seismic wave lines (like a zigzag)
-        let wavePath = NSBezierPath()
-        let waveWidth = baseSize * 0.6
-        let waveHeight: CGFloat = 4
-        let startX = center.x - waveWidth / 2
-        let startY = center.y - baseSize / 3
-
-        wavePath.move(to: NSPoint(x: startX, y: startY))
-        let segments = 6
-        for j in 0..<segments {
-            let x = startX + CGFloat(j + 1) * (waveWidth / CGFloat(segments))
-            let y = startY + (j % 2 == 0 ? waveHeight : -waveHeight)
-            wavePath.line(to: NSPoint(x: x, y: y))
-        }
-
-        color.setStroke()
-        wavePath.lineWidth = 1.5
-        wavePath.stroke()
-
-        earthquakeImage.unlockFocus()
         self.image = earthquakeImage
     }
 }
@@ -657,60 +673,81 @@ class CCTVAnnotationView: MKAnnotationView {
     }
 
     func configure(with camera: CCTVCamera) {
-        let size: CGFloat = 18
-        let statusColor = NSColor(Color(hex: camera.status.color))
+        let hasStream = camera.feedUrl != nil && !(camera.feedUrl?.isEmpty ?? true)
+        let size: CGFloat = hasStream ? 22 : 16
+        let statusColor: NSColor = hasStream
+            ? NSColor(red: 0.0, green: 0.83, blue: 0.67, alpha: 1.0) // bright teal for live
+            : NSColor(Color(hex: camera.status.color)).withAlphaComponent(0.5) // dimmer for no-stream
 
-        let cctvImage = NSImage(size: NSSize(width: size, height: size))
-        cctvImage.lockFocus()
+        // Draw CCTV icon using modern drawing handler
+        let cctvImage = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
+            let center = NSPoint(x: size / 2, y: size / 2)
 
-        let center = NSPoint(x: size / 2, y: size / 2)
+            // Glow ring for cameras with live streams
+            if hasStream {
+                let glowSize: CGFloat = size - 2
+                let glowRect = NSRect(
+                    x: center.x - glowSize / 2,
+                    y: center.y - glowSize / 2,
+                    width: glowSize,
+                    height: glowSize
+                )
+                statusColor.withAlphaComponent(0.2).setFill()
+                NSBezierPath(ovalIn: glowRect).fill()
+                statusColor.withAlphaComponent(0.5).setStroke()
+                let glowPath = NSBezierPath(ovalIn: glowRect)
+                glowPath.lineWidth = 1.0
+                glowPath.stroke()
+            }
 
-        // Draw camera body
-        let bodyWidth: CGFloat = 10
-        let bodyHeight: CGFloat = 7
-        let bodyRect = NSRect(
-            x: center.x - bodyWidth / 2,
-            y: center.y - bodyHeight / 2,
-            width: bodyWidth,
-            height: bodyHeight
-        )
-        statusColor.withAlphaComponent(0.8).setFill()
-        NSBezierPath(roundedRect: bodyRect, xRadius: 2, yRadius: 2).fill()
-
-        // Draw lens
-        let lensSize: CGFloat = 4
-        let lensRect = NSRect(
-            x: center.x + bodyWidth / 2 - 2,
-            y: center.y - lensSize / 2,
-            width: lensSize,
-            height: lensSize
-        )
-        statusColor.setFill()
-        NSBezierPath(ovalIn: lensRect).fill()
-
-        // Draw mount
-        let mountPath = NSBezierPath()
-        mountPath.move(to: NSPoint(x: center.x, y: center.y - bodyHeight / 2))
-        mountPath.line(to: NSPoint(x: center.x, y: center.y - bodyHeight / 2 - 4))
-        statusColor.setStroke()
-        mountPath.lineWidth = 2
-        mountPath.stroke()
-
-        // Recording indicator (red dot for recording status)
-        if camera.status == .recording {
-            let recSize: CGFloat = 3
-            let recRect = NSRect(
-                x: center.x - bodyWidth / 2 + 2,
-                y: center.y + bodyHeight / 2 - recSize - 1,
-                width: recSize,
-                height: recSize
+            // Draw camera body
+            let bodyWidth: CGFloat = hasStream ? 11 : 9
+            let bodyHeight: CGFloat = hasStream ? 8 : 6
+            let bodyRect = NSRect(
+                x: center.x - bodyWidth / 2,
+                y: center.y - bodyHeight / 2,
+                width: bodyWidth,
+                height: bodyHeight
             )
-            NSColor.red.setFill()
-            NSBezierPath(ovalIn: recRect).fill()
-        }
+            statusColor.withAlphaComponent(hasStream ? 0.9 : 0.6).setFill()
+            NSBezierPath(roundedRect: bodyRect, xRadius: 2, yRadius: 2).fill()
 
-        cctvImage.unlockFocus()
+            // Draw lens
+            let lensSize: CGFloat = hasStream ? 4 : 3
+            let lensRect = NSRect(
+                x: center.x + bodyWidth / 2 - 2,
+                y: center.y - lensSize / 2,
+                width: lensSize,
+                height: lensSize
+            )
+            statusColor.setFill()
+            NSBezierPath(ovalIn: lensRect).fill()
+
+            // Draw mount
+            let mountPath = NSBezierPath()
+            mountPath.move(to: NSPoint(x: center.x, y: center.y - bodyHeight / 2))
+            mountPath.line(to: NSPoint(x: center.x, y: center.y - bodyHeight / 2 - 3))
+            statusColor.setStroke()
+            mountPath.lineWidth = hasStream ? 2 : 1.5
+            mountPath.stroke()
+
+            // Live stream indicator (green dot) instead of just recording indicator
+            if hasStream {
+                let dotSize: CGFloat = 4
+                let dotRect = NSRect(
+                    x: center.x - bodyWidth / 2 + 1,
+                    y: center.y + bodyHeight / 2 - dotSize,
+                    width: dotSize,
+                    height: dotSize
+                )
+                NSColor(red: 0.0, green: 1.0, blue: 0.53, alpha: 1.0).setFill()
+                NSBezierPath(ovalIn: dotRect).fill()
+            }
+
+            return true
+        }
         self.image = cctvImage
+        frame = CGRect(x: 0, y: 0, width: size, height: size)
     }
 }
 

@@ -120,20 +120,26 @@ actor CelesTrakService {
         return satellite
     }
 
-    /// Fetch multiple satellite groups
+    /// Fetch multiple satellite groups concurrently for faster loading
     func fetchSatellites(groups: [SatelliteGroup]) async throws -> [Satellite] {
-        var allSatellites: [Satellite] = []
-
-        for group in groups {
-            do {
-                let satellites = try await fetchSatellites(group: group)
-                allSatellites.append(contentsOf: satellites)
-            } catch {
-                print("Failed to fetch \(group.displayName): \(error)")
+        return try await withThrowingTaskGroup(of: [Satellite].self) { taskGroup in
+            for group in groups {
+                taskGroup.addTask {
+                    do {
+                        return try await self.fetchSatellites(group: group)
+                    } catch {
+                        NSLog("[TERRA5] CelesTrak: Failed to fetch %@: %@", group.displayName, error.localizedDescription)
+                        return []
+                    }
+                }
             }
-        }
 
-        return allSatellites
+            var allSatellites: [Satellite] = []
+            for try await satellites in taskGroup {
+                allSatellites.append(contentsOf: satellites)
+            }
+            return allSatellites
+        }
     }
 }
 

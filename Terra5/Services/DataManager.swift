@@ -23,7 +23,7 @@ class DataManager {
     private let satelliteInterval: TimeInterval = 60 // seconds
     private let earthquakeInterval: TimeInterval = 300 // 5 minutes
     private let weatherInterval: TimeInterval = 300 // 5 minutes
-    private let cctvInterval: TimeInterval = 60 // 1 minute
+    private let cctvInterval: TimeInterval = 600 // 10 minutes (insecam data changes slowly)
 
     init(appState: AppState) {
         self.appState = appState
@@ -197,10 +197,24 @@ class DataManager {
         appState.isLoadingCCTV = true
         appState.cctvError = nil
 
-        // Load sample CCTV cameras (static data for demo)
-        appState.cctvCameras = CCTVCamera.sampleCameras
+        // Start with worldwide built-in camera database
+        var cameras = CCTVCamera.sampleCameras
+
+        // Try to supplement with live cameras from insecam.org
+        do {
+            let insecamCameras = try await InsecamService.shared.fetchCameras()
+            if !insecamCameras.isEmpty {
+                cameras.append(contentsOf: insecamCameras)
+                NSLog("[TERRA5] fetchCCTV: added %d cameras from insecam.org", insecamCameras.count)
+            }
+        } catch {
+            // insecam.org uses bot protection — built-in database still provides 200+ cameras
+            NSLog("[TERRA5] fetchCCTV: insecam.org unavailable (%@), using built-in database only", error.localizedDescription)
+        }
+
+        appState.cctvCameras = cameras
         appState.cctvLastUpdate = Date()
-        NSLog("[TERRA5] fetchCCTV: loaded %d cameras", appState.cctvCameras.count)
+        NSLog("[TERRA5] fetchCCTV: total %d cameras loaded", cameras.count)
 
         appState.isLoadingCCTV = false
     }

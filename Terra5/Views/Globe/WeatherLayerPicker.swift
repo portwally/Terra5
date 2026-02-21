@@ -61,7 +61,7 @@ struct WeatherLayerButton: View {
     }
 }
 
-// MARK: - Map Mode Toggle (2D/3D)
+// MARK: - Map Mode Toggle (2D/3D View Preference)
 struct MapModeToggle: View {
     @EnvironmentObject var appState: AppState
 

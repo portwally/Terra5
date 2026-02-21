@@ -21,18 +21,21 @@ class AppState: ObservableObject {
         static let lastAltitude = "terra5.lastAltitude"
     }
 
+    // Guard to prevent saveSettings() during loadSettings()
+    private var isLoadingSettings = false
+
     // MARK: - Visual State
     @Published var visualMode: VisualMode = .normal {
-        didSet { saveSettings() }
+        didSet { saveSettingsIfReady() }
     }
     @Published var isSidebarExpanded: Bool = true {
-        didSet { saveSettings() }
+        didSet { saveSettingsIfReady() }
     }
     @Published var isPanopticActive: Bool = false
 
     // MARK: - Data Layers
     @Published var activeLayers: Set<DataLayerType> = [] {
-        didSet { saveSettings() }
+        didSet { saveSettingsIfReady() }
     }
 
     // MARK: - Weather Layer Selection
@@ -41,15 +44,24 @@ class AppState: ObservableObject {
     // MARK: - Map Mode (3D Globe vs 2D Map)
     @Published var is2DMapMode: Bool = false
 
+    // MARK: - CCTV Camera Selection (for live stream popup)
+    @Published var selectedCCTVCamera: CCTVCamera?
+
     // MARK: - Location State
     @Published var currentCity: CityPreset = CityPreset.presets[0] {
-        didSet { saveSettings() }
+        didSet { saveSettingsIfReady() }
     }
     @Published var selectedLandmark: Landmark?
 
     // MARK: - Initialization
     init() {
         loadSettings()
+    }
+
+    /// Only save settings if we're not in the middle of loading
+    private func saveSettingsIfReady() {
+        guard !isLoadingSettings else { return }
+        saveSettings()
     }
 
     // MARK: - Camera State (updated from MapKit)
@@ -323,8 +335,8 @@ class AppState: ObservableObject {
         // Sidebar state
         defaults.set(isSidebarExpanded, forKey: SettingsKey.sidebarExpanded)
 
-        // Active layers
-        let layerStrings = activeLayers.map { $0.rawValue }
+        // Active layers (exclude CCTV — it should always start off since it fetches live data)
+        let layerStrings = activeLayers.filter { $0 != .cctv }.map { $0.rawValue }
         defaults.set(layerStrings, forKey: SettingsKey.activeLayers)
 
         // Current city (store index)
@@ -339,6 +351,9 @@ class AppState: ObservableObject {
     }
 
     private func loadSettings() {
+        isLoadingSettings = true
+        defer { isLoadingSettings = false }
+
         let defaults = UserDefaults.standard
 
         // Visual mode
@@ -360,7 +375,7 @@ class AppState: ObservableObject {
             }
         }
 
-        // Current city
+        // Current city (use stable name-based lookup)
         let cityIndex = defaults.integer(forKey: SettingsKey.lastCityIndex)
         if cityIndex >= 0 && cityIndex < CityPreset.presets.count {
             currentCity = CityPreset.presets[cityIndex]

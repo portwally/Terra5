@@ -14,18 +14,17 @@ struct CesiumWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
 
-        // Enable JavaScript
-        config.preferences.javaScriptEnabled = true
-
-        // Allow file access
-        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        // Enable JavaScript via modern API
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
 
         // Add message handlers for Swift-JS communication
+        // Use a weak proxy to avoid retain cycle: WKUserContentController -> Coordinator
         let contentController = config.userContentController
-        contentController.add(context.coordinator, name: "globeReady")
-        contentController.add(context.coordinator, name: "cameraChanged")
-        contentController.add(context.coordinator, name: "entityClicked")
-        contentController.add(context.coordinator, name: "dataUpdated")
+        let proxy = WeakScriptMessageHandler(delegate: context.coordinator)
+        contentController.add(proxy, name: "globeReady")
+        contentController.add(proxy, name: "cameraChanged")
+        contentController.add(proxy, name: "entityClicked")
+        contentController.add(proxy, name: "dataUpdated")
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -38,6 +37,15 @@ struct CesiumWebView: NSViewRepresentable {
         loadCesiumHTML(webView: webView)
 
         return webView
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: CesiumCoordinator) {
+        // Remove message handlers to break any remaining references
+        let contentController = webView.configuration.userContentController
+        contentController.removeScriptMessageHandler(forName: "globeReady")
+        contentController.removeScriptMessageHandler(forName: "cameraChanged")
+        contentController.removeScriptMessageHandler(forName: "entityClicked")
+        contentController.removeScriptMessageHandler(forName: "dataUpdated")
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -188,5 +196,22 @@ struct CesiumWebView: NSViewRepresentable {
         </body>
         </html>
         """
+    }
+}
+
+// MARK: - Weak Script Message Handler
+/// Prevents retain cycle: WKUserContentController strongly retains its message handlers,
+/// so we use a weak proxy that forwards to the actual coordinator.
+class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var delegate: WKScriptMessageHandler?
+
+    init(delegate: WKScriptMessageHandler) {
+        self.delegate = delegate
+        super.init()
+    }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        delegate?.userContentController(userContentController, didReceive: message)
     }
 }

@@ -35,6 +35,12 @@ struct MainView: View {
                     )
                     .environmentObject(appState)
 
+                    // Weather mode color tint overlay (makes different modes visually distinct)
+                    if appState.isLayerActive(.weather) {
+                        WeatherTintOverlay(layerType: appState.selectedWeatherLayer)
+                            .allowsHitTesting(false)
+                    }
+
                     // PANOPTIC Detection overlay
                     if appState.isPanopticActive {
                         DetectionOverlayView(
@@ -52,7 +58,7 @@ struct MainView: View {
                         VStack {
                             Spacer()
                             VStack(spacing: 8) {
-                                // 2D/3D toggle for weather
+                                // 2D/3D view toggle
                                 MapModeToggle()
                                     .environmentObject(appState)
                                 // Weather layer picker
@@ -61,6 +67,12 @@ struct MainView: View {
                             }
                             .padding(.bottom, 60)
                         }
+                    }
+
+                    // CCTV stream popup (when a camera is selected)
+                    if let camera = appState.selectedCCTVCamera {
+                        CCTVStreamPopup(camera: camera)
+                            .environmentObject(appState)
                     }
 
                     // Visual mode overlay (scanlines for CRT, etc.)
@@ -739,15 +751,24 @@ struct AIGrid: View {
 }
 
 struct AITargetingBrackets: View {
+    // Use stable positions so boxes don't jump on every re-render
+    // Positions are expressed as fractions of the container size
+    private let boxPositions: [(x: CGFloat, y: CGFloat)] = [
+        (0.25, 0.30),
+        (0.65, 0.55),
+        (0.40, 0.75)
+    ]
+
     var body: some View {
         GeometryReader { geo in
             let size: CGFloat = 100
-            let offset: CGFloat = 50
+            let inset: CGFloat = 50
 
-            // Simulated detection boxes
-            ForEach(0..<3, id: \.self) { i in
-                let x = CGFloat.random(in: offset...(geo.size.width - size - offset))
-                let y = CGFloat.random(in: offset...(geo.size.height - size - offset))
+            ForEach(0..<boxPositions.count, id: \.self) { i in
+                let maxX = max(inset, geo.size.width - size - inset)
+                let maxY = max(inset, geo.size.height - size - inset)
+                let x = inset + boxPositions[i].x * (maxX - inset)
+                let y = inset + boxPositions[i].y * (maxY - inset)
 
                 AIDetectionBox()
                     .frame(width: size, height: size)
@@ -785,6 +806,88 @@ struct AIDetectionBox: View {
                 opacity = 0.8
             }
         }
+    }
+}
+
+// MARK: - Weather Tint Overlay
+/// Shows mode indicator badge for current weather layer
+struct WeatherTintOverlay: View {
+    let layerType: WeatherLayerType
+
+    var body: some View {
+        // Mode indicator badge (top-right)
+        VStack {
+            HStack {
+                Spacer()
+                WeatherModeBadge(layerType: layerType)
+                    .padding(.top, 60)
+                    .padding(.trailing, 16)
+            }
+            Spacer()
+        }
+    }
+}
+
+/// Badge showing current weather mode with data source info
+struct WeatherModeBadge: View {
+    let layerType: WeatherLayerType
+
+    var icon: String {
+        switch layerType {
+        case .rain: return "cloud.rain.fill"
+        case .clouds: return "globe.americas.fill"
+        case .temperature: return "thermometer.sun.fill"
+        }
+    }
+
+    var label: String {
+        switch layerType {
+        case .rain: return "RADAR"
+        case .clouds: return "SATELLITE"
+        case .temperature: return "THERMAL IR"
+        }
+    }
+
+    var source: String {
+        switch layerType {
+        case .rain: return "RainViewer"
+        case .clouds: return "NASA VIIRS"
+        case .temperature: return "NASA VIIRS"
+        }
+    }
+
+    var color: Color {
+        switch layerType {
+        case .rain: return Color(hex: "#00ff88")
+        case .clouds: return .cyan
+        case .temperature: return .orange
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .bold))
+                Text(label)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+            }
+            .foregroundColor(color)
+
+            Text(source)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundColor(color.opacity(0.7))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.black.opacity(0.85))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(color.opacity(0.5), lineWidth: 1)
+                )
+        )
     }
 }
 
